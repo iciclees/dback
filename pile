@@ -1,0 +1,10 @@
+#!/bin/bash
+
+INJAR="bin/commons-codec-1.10.jar;bin/commons-csv-1.5.jar"
+OUTJAR="bin/DBack.jar"
+MANIFEST="Manifest.txt"
+
+
+find source -name '*.java' | xargs javac -cp "$INJAR" -d build
+rm -f "$OUTJAR"
+jar -cmf "$MANIFEST" "$OUTJAR" -C build .
