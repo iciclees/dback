@@ -1,48 +1,116 @@
 import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVPrinter;
-import java.io.BufferedWriter;
+import org.apache.commons.csv.CSVRecord;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.zip.DataFormatException;
 
 public class DBack
 {
-	public class DEntry
+	public class IndexEntry
 	{
+		private static final int IS_READABLE = 4;
+		private static final int IS_WRITABLE = 2;
+		private static final int IS_EXECUTABLE = 1;
+
 		public String mName;
+		public int mPermissions;
+
+		public IndexEntry(String name, boolean isReadable, boolean isWritable, boolean isExecutable)
+		{
+			mName = name;
+			SetReadable(isReadable);
+			SetWritable(isWritable);
+			SetExecutable(isExecutable);
+		}
+
+		public IndexEntry(String name, int permissions)
+		{
+			mName = name;
+			mPermissions = permissions;
+		}
+
+		public boolean IsReadable()
+		{
+			return (mPermissions & IS_READABLE) != 0;
+		}
+
+		public void SetReadable(boolean readable)
+		{
+			mPermissions = readable ? (mPermissions | IS_READABLE) : (mPermissions & ~IS_READABLE);
+		}
+
+		public boolean IsWritable()
+		{
+			return (mPermissions & IS_WRITABLE) != 0;
+		}
+
+		public void SetWritable(boolean writable)
+		{
+			mPermissions = writable ? (mPermissions | IS_WRITABLE) : (mPermissions & ~IS_WRITABLE);
+		}
+
+		public boolean IsExecutable()
+		{
+			return (mPermissions & IS_EXECUTABLE) != 0;
+		}
+
+		public void SetExecutable(boolean executable)
+		{
+			mPermissions = executable ? (mPermissions | IS_EXECUTABLE) : (mPermissions & ~IS_EXECUTABLE);
+		}
+	}
+
+	public class DEntry extends IndexEntry
+	{
 		public ArrayList<DEntry> mSubDirs;
 		public ArrayList<FEntry> mFiles;
 
-		public DEntry(String name)
+		public DEntry()
 		{
-			mName = name;
+			this("", false, false, false);
+		}
+
+		public DEntry(String name, boolean isReadable, boolean isWritable, boolean isExecutable)
+		{
+			super(name, isReadable, isWritable, isExecutable);
+			mSubDirs = new ArrayList<DEntry>();
+			mFiles = new ArrayList<FEntry>();
+		}
+
+		public DEntry(String name, int permissions)
+		{
+			super(name, permissions);
 			mSubDirs = new ArrayList<DEntry>();
 			mFiles = new ArrayList<FEntry>();
 		}
 	}
 
-	public class FEntry
+	public class FEntry extends IndexEntry
 	{
-		public String mName;
 		public String mSha1;
-		public boolean mCanRead;
-		public boolean mCanWrite;
-		public boolean mCanExecute;
 
-		public FEntry(String name, String sha1, boolean canRead, boolean canWrite, boolean canExecute)
+		public FEntry(String name, String sha1, boolean isReadable, boolean isWritable, boolean isExecutable)
 		{
-			mName = name;
+			super(name, isReadable, isWritable, isExecutable);
 			mSha1 = sha1;
-			mCanRead = canRead;
-			mCanWrite = canWrite;
-			mCanExecute = canExecute;
+		}
+
+		public FEntry(String name, String sha1, int permissions)
+		{
+			super(name, permissions);
+			mSha1 = sha1;
 		}
 	}
 
@@ -55,25 +123,35 @@ public class DBack
 		mTempBuffer = new byte[16*1024];
 	}
 
-	public void BuildIndex(File f) throws IOException
+	public DEntry GetRoot()
 	{
-		mFileMap = new HashMap<String, FEntry>();
-		mRoot = new DEntry("");
-		Index(mRoot, f.getCanonicalFile());
+		return mRoot;
 	}
 
-	private void Index(DEntry parent, File f) throws IOException
+	public void BuildIndex(File f) throws IOException
+	{
+		mRoot = null;
+		mFileMap = new HashMap<String, FEntry>();
+		DEntry tempRoot = new DEntry();
+		BuildIndex(tempRoot, f);
+		if (tempRoot.mSubDirs.size() > 0)
+		{
+			mRoot = tempRoot.mSubDirs.get(0);
+		}
+	}
+
+	private void BuildIndex(DEntry parent, File f) throws IOException
 	{
 		if (f.exists())
 		{
 			if (f.isDirectory())
 			{
-				DEntry dEntry = new DEntry(f.getName());
+				DEntry dEntry = new DEntry(f.getName(), f.canRead(), f.canWrite(), f.canExecute());
 				parent.mSubDirs.add(dEntry);
 				File[] list = f.listFiles();
 				for (File child: list)
 				{
-					Index(dEntry, child);
+					BuildIndex(dEntry, child);
 				}
 			}
 			else if (f.isFile())
@@ -104,43 +182,27 @@ public class DBack
 						fis.close();
 					}
 				}
-
 			}
 		}
 	}
 
 	public void SaveIndex(File output) throws IOException
 	{
-		FileWriter fw = null;
-		BufferedWriter bw = null;
 		CSVPrinter printer = null;
 		try
 		{
-			fw = new FileWriter(output);
-			bw = new BufferedWriter(fw);
-			printer = new CSVPrinter(bw, CSVFormat.DEFAULT);
+			printer = CSVFormat.DEFAULT.print(output, Charset.forName("UTF-8"));
 			SaveIndex(printer, mRoot);
 		}
 		finally
 		{
-			if (printer != null)
-			{
-				printer.close();
-			}
-			if (bw != null)
-			{
-				bw.close();
-			}
-			if (fw != null)
-			{
-				fw.close();
-			}
+			printer.close();
 		}
 	}
 
 	private void SaveIndex(CSVPrinter printer, DEntry dEntry) throws IOException
 	{
-		printer.printRecord('d', dEntry.mName, dEntry.mSubDirs.size() + dEntry.mFiles.size());
+		printer.printRecord('d', dEntry.mName, dEntry.mPermissions, dEntry.mSubDirs.size() + dEntry.mFiles.size());
 		for (DEntry subDir: dEntry.mSubDirs)
 		{
 			SaveIndex(printer, subDir);
@@ -153,6 +215,73 @@ public class DBack
 
 	private void SaveIndex(CSVPrinter printer, FEntry fEntry) throws IOException
 	{
-		printer.printRecord('f', fEntry.mName, fEntry.mSha1);
+		printer.printRecord('f', fEntry.mName, fEntry.mPermissions, fEntry.mSha1);
+	}
+
+	public void LoadIndex(File input) throws IOException, DataFormatException
+	{
+		CSVParser parser = null;
+		try
+		{
+			mRoot = null;
+			mFileMap = new HashMap<String, FEntry>();
+			parser = CSVParser.parse(input, Charset.forName("UTF-8"), CSVFormat.DEFAULT);
+			DEntry tempRoot = new DEntry();
+			LoadIndex(parser.iterator(), tempRoot);
+			if (tempRoot.mSubDirs.size() > 0)
+			{
+				mRoot = tempRoot.mSubDirs.get(0);
+			}
+		}
+		finally
+		{
+			parser.close();
+		}
+	}
+
+	private void LoadIndex(Iterator<CSVRecord> records, DEntry parent) throws DataFormatException
+	{
+		try
+		{
+			if (!records.hasNext())
+			{
+				throw new DataFormatException("Malformed index file.");
+			}
+
+			CSVRecord record = records.next();
+			if (record.size() != 4)
+			{
+				throw new DataFormatException("Malformed index file.");
+			}
+
+			String entryType = record.get(0);
+			String name = record.get(1);
+			int permissions = Integer.decode(record.get(2));
+
+			if (entryType.equals("d"))
+			{
+				DEntry dEntry = new DEntry(name, permissions);
+				parent.mSubDirs.add(dEntry);
+				int numChildren = Integer.decode(record.get(3));
+				for (int i = 0; i < numChildren; ++i)
+				{
+					LoadIndex(records, dEntry);
+				}
+			}
+			else if (entryType.equals("f"))
+			{
+				FEntry fEntry = new FEntry(name, record.get(3), permissions);
+				parent.mFiles.add(fEntry);
+				mFileMap.put(fEntry.mSha1, fEntry);
+			}
+			else
+			{
+				throw new DataFormatException("Malformed index file.");
+			}
+		}
+		catch (NumberFormatException e)
+		{
+			throw new DataFormatException("Malformed index file.");
+		}
 	}
 }
