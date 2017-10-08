@@ -1,14 +1,13 @@
 import java.io.File;
-import java.io.IOException;
-import java.util.zip.DataFormatException;
 
 public class DBackMain
 {
 	public static void main(String[] args)
 	{
-		File rootToArchive = null;
-		File indexToLoad = null;
+		File localPath = null;
+		File remoteIndexPath = null;
 		boolean saveIndex = false;
+		boolean backup = false;
 		boolean error = false;
 
 		try
@@ -17,68 +16,57 @@ public class DBackMain
 			{
 				String arg = args[i];
 
-				if (arg.equals("-s"))
+				if (arg.equals("-b"))
 				{
-					saveIndex = true;
+					backup = true;
 				}
 				else if (arg.equals("-l"))
 				{
 					if (++i < args.length)
 					{
-						if (indexToLoad != null)
+						if (localPath != null)
 						{
 							System.err.println("Only one occurence of -l is allowed.");
 							error = true;
 						}
-						else if (rootToArchive != null)
+						else
 						{
-							System.err.println("Cannot specify both a directory and an index file with -l.");
+							localPath = new File(args[i]);
+						}
+					}
+					else
+					{
+						System.err.println("Missing argument to -l.");
+						error = true;
+					}
+				}
+				else if (arg.equals("-r"))
+				{
+					if (++i < args.length)
+					{
+						if (remoteIndexPath != null)
+						{
+							System.err.println("Only one occurence of -r is allowed.");
 							error = true;
 						}
 						else
 						{
-							indexToLoad = new File(args[i]);
-							if (!indexToLoad.exists())
-							{
-								System.err.printf("'%s' does not exist.\n", arg);
-								error = true;
-							}
-							indexToLoad = indexToLoad.getCanonicalFile();
+							remoteIndexPath = new File(args[i]);
 						}
 					}
 					else
 					{
-						System.err.println("Missing argument to -i.");
+						System.err.println("Missing argument to -r.");
 						error = true;
 					}
 				}
+				else if (arg.equals("-s"))
+				{
+					saveIndex = true;
+				}
 				else
 				{
-					if (rootToArchive != null)
-					{
-						System.err.println("Only one directory may be specified.");
-						error = true;
-					}
-					else if (indexToLoad != null)
-					{
-						System.err.println("Cannot specify both a directory and an index file with -l.");
-						error = true;
-					}
-					else
-					{
-						rootToArchive = new File(arg);
-						if (!rootToArchive.exists())
-						{
-							System.err.printf("'%s' does not exist.\n", arg);
-							error = true;
-						}
-						else if (!rootToArchive.isDirectory())
-						{
-							System.err.printf("'%s' is not a directory.\n", arg);
-							error = true;
-						}
-						rootToArchive = rootToArchive.getCanonicalFile();
-					}
+					System.err.printf("Unknown option: %s\n", arg);
 				}
 			}
 
@@ -89,30 +77,27 @@ public class DBackMain
 
 			DBack dback = new DBack();
 
-			if (rootToArchive != null)
+			if (localPath != null)
 			{
-				dback.BuildIndex(rootToArchive);
+				dback.LoadLocalPath(localPath);
 			}
-			else if (indexToLoad != null)
+			if (saveIndex)
 			{
-				dback.LoadIndex(indexToLoad);
-				rootToArchive = new File(indexToLoad.getParent(), dback.GetRoot().mName);
+				dback.SaveLocalIndex();
 			}
-
-			if ((rootToArchive != null) && saveIndex)
+			if (remoteIndexPath != null)
 			{
-				File indexFile = new File(rootToArchive + ".index");
-				dback.SaveIndex(indexFile);
+				dback.LoadRemoteIndex(remoteIndexPath);
+			}
+			if (backup)
+			{
+				dback.PerformBackup();
 			}
 		}
-		catch (IOException e)
+		catch (Exception e)
 		{
-			System.err.println(e.getMessage());
-			System.exit(1);
-		}
-		catch (DataFormatException e)
-		{
-			System.err.println(e.getMessage());
+			System.err.println(e);
+			System.err.printf("Error: %s\n", e.getMessage());
 			System.exit(1);
 		}
 	}

@@ -1,287 +1,157 @@
-import org.apache.commons.codec.binary.Hex;
-import org.apache.commons.csv.CSVFormat;
-import org.apache.commons.csv.CSVParser;
-import org.apache.commons.csv.CSVPrinter;
-import org.apache.commons.csv.CSVRecord;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileWriter;
+import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.charset.Charset;
-import java.security.DigestInputStream;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashSet;
 import java.util.zip.DataFormatException;
 
 public class DBack
 {
-	public class IndexEntry
-	{
-		private static final int IS_READABLE = 4;
-		private static final int IS_WRITABLE = 2;
-		private static final int IS_EXECUTABLE = 1;
-
-		public String mName;
-		public int mPermissions;
-
-		public IndexEntry(String name, boolean isReadable, boolean isWritable, boolean isExecutable)
-		{
-			mName = name;
-			SetReadable(isReadable);
-			SetWritable(isWritable);
-			SetExecutable(isExecutable);
-		}
-
-		public IndexEntry(String name, int permissions)
-		{
-			mName = name;
-			mPermissions = permissions;
-		}
-
-		public boolean IsReadable()
-		{
-			return (mPermissions & IS_READABLE) != 0;
-		}
-
-		public void SetReadable(boolean readable)
-		{
-			mPermissions = readable ? (mPermissions | IS_READABLE) : (mPermissions & ~IS_READABLE);
-		}
-
-		public boolean IsWritable()
-		{
-			return (mPermissions & IS_WRITABLE) != 0;
-		}
-
-		public void SetWritable(boolean writable)
-		{
-			mPermissions = writable ? (mPermissions | IS_WRITABLE) : (mPermissions & ~IS_WRITABLE);
-		}
-
-		public boolean IsExecutable()
-		{
-			return (mPermissions & IS_EXECUTABLE) != 0;
-		}
-
-		public void SetExecutable(boolean executable)
-		{
-			mPermissions = executable ? (mPermissions | IS_EXECUTABLE) : (mPermissions & ~IS_EXECUTABLE);
-		}
-	}
-
-	public class DEntry extends IndexEntry
-	{
-		public ArrayList<DEntry> mSubDirs;
-		public ArrayList<FEntry> mFiles;
-
-		public DEntry()
-		{
-			this("", false, false, false);
-		}
-
-		public DEntry(String name, boolean isReadable, boolean isWritable, boolean isExecutable)
-		{
-			super(name, isReadable, isWritable, isExecutable);
-			mSubDirs = new ArrayList<DEntry>();
-			mFiles = new ArrayList<FEntry>();
-		}
-
-		public DEntry(String name, int permissions)
-		{
-			super(name, permissions);
-			mSubDirs = new ArrayList<DEntry>();
-			mFiles = new ArrayList<FEntry>();
-		}
-	}
-
-	public class FEntry extends IndexEntry
-	{
-		public String mSha1;
-
-		public FEntry(String name, String sha1, boolean isReadable, boolean isWritable, boolean isExecutable)
-		{
-			super(name, isReadable, isWritable, isExecutable);
-			mSha1 = sha1;
-		}
-
-		public FEntry(String name, String sha1, int permissions)
-		{
-			super(name, permissions);
-			mSha1 = sha1;
-		}
-	}
-
-	private HashMap<String, FEntry> mFileMap;
-	private DEntry mRoot;
-	private byte[] mTempBuffer;
+	//private File mLocalIndexPath;
+	private File mLocalPath;
+	//private File mRemoteIndexPath;
+	private File mRemotePath;
+	private File mRemoteDbPath;
+	private DEntry mLocalIndex;
+	private DEntry mRemoteIndex;
+	private HashSet<String> mRemoteDb;
 
 	public DBack()
 	{
-		mTempBuffer = new byte[16*1024];
 	}
 
 	public DEntry GetRoot()
 	{
-		return mRoot;
+		return mLocalIndex;
 	}
 
-	public void BuildIndex(File f) throws IOException
+	public void LoadLocalPath(File localPath) throws IOException, DataFormatException
 	{
-		mRoot = null;
-		mFileMap = new HashMap<String, FEntry>();
-		DEntry tempRoot = new DEntry();
-		BuildIndex(tempRoot, f);
-		if (tempRoot.mSubDirs.size() > 0)
+		File path = localPath.getCanonicalFile();
+		if (path.isDirectory())
 		{
-			mRoot = tempRoot.mSubDirs.get(0);
+			mLocalPath = path;
+			mLocalIndex = IndexUtils.BuildIndex(path);
+			// mLocalIndexPath = null;
+		}
+		else
+		{
+			// mLocalIndexPath = path;
+			mLocalIndex = IndexUtils.LoadIndex(path);
+			mLocalPath = new File(path.getParent(), mLocalIndex.mName);
+		}
+		// mFileMap = new HashMap<String, FEntry>();
+	}
+
+	public void SaveLocalIndex() throws IOException
+	{
+		AssertLocalIndex();
+		// if (mLocalIndexPath == null)
+		// {
+		// 	mLocalIndexPath = new File(mLocalPath.toString() + ".index");
+		// }
+		File localIndexPath = new File(mLocalPath.toString() + ".index");
+		IndexUtils.SaveIndex(localIndexPath, mLocalIndex);
+	}
+
+	public void LoadRemoteIndex(File remoteIndexPath) throws IOException, DataFormatException
+	{
+		File path = remoteIndexPath.getCanonicalFile();
+		mRemoteDb = new HashSet<String>();
+		if (path.isDirectory())
+		{
+			mRemotePath = path;
+			mRemoteDbPath = new File(path, "db");
+		}
+		else
+		{
+			// mRemoteIndexPath = path;
+			mRemoteIndex = IndexUtils.LoadIndex(path);
+			mRemotePath = path.getParentFile();
+			mRemoteDbPath = new File(mRemotePath, "db");
 		}
 	}
 
-	private void BuildIndex(DEntry parent, File f) throws IOException
+	public void PerformBackup() throws IOException
 	{
-		if (f.exists())
-		{
-			if (f.isDirectory())
-			{
-				DEntry dEntry = new DEntry(f.getName(), f.canRead(), f.canWrite(), f.canExecute());
-				parent.mSubDirs.add(dEntry);
-				File[] list = f.listFiles();
-				for (File child: list)
-				{
-					BuildIndex(dEntry, child);
-				}
-			}
-			else if (f.isFile())
-			{
-				FileInputStream fis = null;
-				DigestInputStream dis = null;
-				try
-				{
-					MessageDigest md = MessageDigest.getInstance("SHA-1");
-					fis = new FileInputStream(f);
-					dis = new DigestInputStream(fis, md);
-					byte[] tempBuffer = mTempBuffer;
-					while (dis.read(tempBuffer) != -1) {}
-					String sha1 = Hex.encodeHexString(md.digest());
-					FEntry fEntry = new FEntry(f.getName(), sha1, f.canRead(), f.canWrite(), f.canExecute());
-					mFileMap.put(sha1, fEntry);
-					parent.mFiles.add(fEntry);
-				}
-				catch (NoSuchAlgorithmException e) {}
-				finally
-				{
-					if (dis != null)
-					{
-						dis.close();
-					}
-					if (fis != null)
-					{
-						fis.close();
-					}
-				}
-			}
-		}
+		AssertLocalIndex();
+		BackupIndex();
+		byte[] tempBuffer = new byte[16*1024];
+		Backup(mLocalPath, mLocalIndex, tempBuffer);
 	}
 
-	public void SaveIndex(File output) throws IOException
+	private void BackupIndex() throws IOException
 	{
-		CSVPrinter printer = null;
-		try
-		{
-			printer = CSVFormat.DEFAULT.print(output, Charset.forName("UTF-8"));
-			SaveIndex(printer, mRoot);
-		}
-		finally
-		{
-			printer.close();
-		}
+		String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-AAAAAAAA"));
+		File remoteIndexPath = new File(mRemotePath, "index." + time);
+		IndexUtils.SaveIndex(remoteIndexPath, mLocalIndex);
 	}
 
-	private void SaveIndex(CSVPrinter printer, DEntry dEntry) throws IOException
+	private void Backup(File dir, DEntry dEntry, byte[] tempBuffer) throws IOException
 	{
-		printer.printRecord('d', dEntry.mName, dEntry.mPermissions, dEntry.mSubDirs.size() + dEntry.mFiles.size());
+		System.out.printf("Backing up: %s\n", dir.toString());
+		mRemoteDbPath.mkdirs();
 		for (DEntry subDir: dEntry.mSubDirs)
 		{
-			SaveIndex(printer, subDir);
+			Backup(new File(dir, subDir.mName), subDir, tempBuffer);
 		}
 		for (FEntry file: dEntry.mFiles)
 		{
-			SaveIndex(printer, file);
+			Backup(new File(dir, file.mName), file, tempBuffer);
 		}
 	}
 
-	private void SaveIndex(CSVPrinter printer, FEntry fEntry) throws IOException
+	private void Backup(File file, FEntry fEntry, byte[] tempBuffer) throws IOException
 	{
-		printer.printRecord('f', fEntry.mName, fEntry.mPermissions, fEntry.mSha1);
-	}
-
-	public void LoadIndex(File input) throws IOException, DataFormatException
-	{
-		CSVParser parser = null;
-		try
+		if (!mRemoteDb.contains(fEntry.mSha1))
 		{
-			mRoot = null;
-			mFileMap = new HashMap<String, FEntry>();
-			parser = CSVParser.parse(input, Charset.forName("UTF-8"), CSVFormat.DEFAULT);
-			DEntry tempRoot = new DEntry();
-			LoadIndex(parser.iterator(), tempRoot);
-			if (tempRoot.mSubDirs.size() > 0)
+			System.out.printf("Backing up: %s\n", file.toString());
+			FileInputStream fis = null;
+			FileOutputStream fos = null;
+			try
 			{
-				mRoot = tempRoot.mSubDirs.get(0);
-			}
-		}
-		finally
-		{
-			parser.close();
-		}
-	}
-
-	private void LoadIndex(Iterator<CSVRecord> records, DEntry parent) throws DataFormatException
-	{
-		try
-		{
-			if (!records.hasNext())
-			{
-				throw new DataFormatException("Malformed index file.");
-			}
-
-			CSVRecord record = records.next();
-			if (record.size() != 4)
-			{
-				throw new DataFormatException("Malformed index file.");
-			}
-
-			String entryType = record.get(0);
-			String name = record.get(1);
-			int permissions = Integer.decode(record.get(2));
-
-			if (entryType.equals("d"))
-			{
-				DEntry dEntry = new DEntry(name, permissions);
-				parent.mSubDirs.add(dEntry);
-				int numChildren = Integer.decode(record.get(3));
-				for (int i = 0; i < numChildren; ++i)
+				File dest = new File(mRemoteDbPath, fEntry.mSha1);
+				fis = new FileInputStream(file);
+				fos = new FileOutputStream(dest);
+				int bytesRead = -1;
+				while ((bytesRead = fis.read(tempBuffer)) != -1)
 				{
-					LoadIndex(records, dEntry);
+					fos.write(tempBuffer, 0, bytesRead);
+				}
+				mRemoteDb.add(fEntry.mSha1);
+			}
+			finally
+			{
+				if (fis != null)
+				{
+					fis.close();
+				}
+				if (fos != null)
+				{
+					fos.close();
 				}
 			}
-			else if (entryType.equals("f"))
-			{
-				FEntry fEntry = new FEntry(name, record.get(3), permissions);
-				parent.mFiles.add(fEntry);
-				mFileMap.put(fEntry.mSha1, fEntry);
-			}
-			else
-			{
-				throw new DataFormatException("Malformed index file.");
-			}
-		}
-		catch (NumberFormatException e)
-		{
-			throw new DataFormatException("Malformed index file.");
 		}
 	}
+
+	private void AssertLocalIndex()
+	{
+		if (mLocalIndex == null)
+		{
+			throw new IllegalStateException("No local index has been created.");
+		}
+	}
+
+	// private void AssertRemoteIndex()
+	// {
+	// 	if (mRemoteIndex == null)
+	// 	{
+	// 		throw new IllegalStateException("No remote index has been created.");
+	// 	}
+	// }
 }
